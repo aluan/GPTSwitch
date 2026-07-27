@@ -131,6 +131,29 @@ struct CodexConfigEditor: Sendable {
         )
     }
 
+    func adoptLoopback(
+        at configURL: URL = AppPaths.codexConfig,
+        port: UInt16,
+        bridgeModel override: String?,
+        upstreamBaseURL: String
+    ) throws -> ProxyConfiguration {
+        let parsed = try parse(configURL)
+        let upstream = try validatedUpstream(upstreamBaseURL)
+        let localURL = localBaseURL(for: upstream, port: port)
+        guard normalizedBaseURL(parsed.baseURL) == normalizedBaseURL(localURL.absoluteString) else {
+            throw ConfigEditorError.configurationChanged(parsed.baseURL)
+        }
+        return ProxyConfiguration(
+            configPath: configURL.path,
+            providerName: parsed.providerName,
+            bridgeModel: normalizedModel(override) ?? parsed.model,
+            upstreamBaseURL: upstream.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+            localBaseURL: localURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+            port: port,
+            backupPath: nil
+        )
+    }
+
     func activate(_ configuration: ProxyConfiguration) throws {
         let configURL = URL(fileURLWithPath: configuration.configPath)
         let parsed = try parse(configURL)

@@ -166,6 +166,68 @@ final class ProviderModelsTests: XCTestCase {
         XCTAssertFalse(provider.profile.baseURL.contains("new-secret"))
     }
 
+    func testChatGPTAuthorizerPreservesIncomingTokenAndAddsAccountID() {
+        let providerID = UUID()
+        let profile = ProviderProfile(
+            id: providerID,
+            configName: "chatgpt",
+            displayName: "ChatGPT",
+            baseURL: ChatGPTProviderDefaults.baseURL,
+            bridgeModel: "gpt-5",
+            credentialMode: .chatGPTAccount
+        )
+        let provider = ActiveProviderSnapshot(
+            profile: profile,
+            bearerToken: "fallback-token",
+            chatGPTAccountID: "account-test"
+        )
+        var request = URLRequest(url: URL(string: ChatGPTProviderDefaults.baseURL)!)
+        request.setValue("Bearer refreshed-token", forHTTPHeaderField: "Authorization")
+
+        ProviderRequestAuthorizer.apply(provider, to: &request)
+
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer refreshed-token")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "ChatGPT-Account-Id"), "account-test")
+        XCTAssertNil(request.value(forHTTPHeaderField: "x-api-key"))
+    }
+
+    func testChatGPTProviderRequiresOfficialResponsesEndpoint() throws {
+        let providerID = UUID()
+        let valid = ProviderProfile(
+            id: providerID,
+            configName: "chatgpt",
+            displayName: "ChatGPT",
+            baseURL: ChatGPTProviderDefaults.baseURL,
+            bridgeModel: "gpt-5",
+            credentialMode: .chatGPTAccount
+        )
+        XCTAssertNoThrow(try valid.validated(proxyPort: 17_891))
+
+        var invalid = valid
+        invalid.baseURL = "https://api.openai.com/v1"
+        XCTAssertThrowsError(try invalid.validated(proxyPort: 17_891)) { error in
+            XCTAssertEqual(error as? ProviderValidationError, .invalidChatGPTProvider)
+        }
+    }
+
+    func testChatGPTProviderTemplateUsesCurrentModelWithoutAPIKey() {
+        let providerID = UUID()
+        let provider = ChatGPTProviderDefaults.profile(
+            id: providerID,
+            modelID: "current-codex-model",
+            sortOrder: 3
+        )
+
+        XCTAssertEqual(provider.configName, "chatgpt")
+        XCTAssertEqual(provider.baseURL, "https://chatgpt.com/backend-api/codex")
+        XCTAssertEqual(provider.wireProtocol, .responses)
+        XCTAssertEqual(provider.credentialMode, .chatGPTAccount)
+        XCTAssertEqual(provider.bridgeModel, "current-codex-model")
+        XCTAssertEqual(provider.models.first?.modelID, "current-codex-model")
+        XCTAssertEqual(provider.models.first?.providerID, providerID)
+        XCTAssertEqual(provider.sortOrder, 3)
+    }
+
     private func snapshot(name: String, token: String) -> ActiveProviderSnapshot {
         ActiveProviderSnapshot(
             profile: ProviderProfile(

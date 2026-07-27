@@ -4,12 +4,14 @@ enum ProviderCredentialMode: String, Codable, CaseIterable, Sendable {
     case keychainBearer = "keychain_bearer"
     case keychainAPIKey = "keychain_api_key"
     case passthrough
+    case chatGPTAccount = "chatgpt_account"
 
     var title: String {
         switch self {
         case .keychainBearer: "钥匙串 Bearer Token"
         case .keychainAPIKey: "钥匙串 x-api-key"
         case .passthrough: "沿用 Codex 凭据"
+        case .chatGPTAccount: "ChatGPT 账号登录"
         }
     }
 }
@@ -263,6 +265,12 @@ struct ProviderProfile: Identifiable, Codable, Equatable, Hashable, Sendable {
         } else {
             guard !output.inferenceModel.isEmpty else { throw ProviderValidationError.missingInferenceModel }
         }
+        if output.credentialMode == .chatGPTAccount {
+            guard output.wireProtocol == .responses,
+                  output.baseURL == ChatGPTProviderDefaults.baseURL else {
+                throw ProviderValidationError.invalidChatGPTProvider
+            }
+        }
         return output
     }
 }
@@ -270,7 +278,18 @@ struct ProviderProfile: Identifiable, Codable, Equatable, Hashable, Sendable {
 struct ActiveProviderSnapshot: Equatable, Sendable {
     let profile: ProviderProfile
     let bearerToken: String?
+    let chatGPTAccountID: String?
     var upstreamModelOverride: String? = nil
+
+    init(
+        profile: ProviderProfile,
+        bearerToken: String?,
+        chatGPTAccountID: String? = nil
+    ) {
+        self.profile = profile
+        self.bearerToken = bearerToken
+        self.chatGPTAccountID = chatGPTAccountID
+    }
 
     var id: UUID { profile.id }
     var upstreamBaseURL: String { profile.baseURL }
@@ -278,7 +297,7 @@ struct ActiveProviderSnapshot: Equatable, Sendable {
     var inferenceModel: String { upstreamModelOverride ?? profile.inferenceModel }
 }
 
-enum ProviderValidationError: LocalizedError {
+enum ProviderValidationError: LocalizedError, Equatable {
     case missingName
     case missingConfigName
     case invalidConfigName
@@ -293,6 +312,7 @@ enum ProviderValidationError: LocalizedError {
     case incompatibleToolCalling(String)
     case activeProviderCannotBeDeleted
     case missingProvider
+    case invalidChatGPTProvider
 
     var errorDescription: String? {
         switch self {
@@ -310,6 +330,7 @@ enum ProviderValidationError: LocalizedError {
         case .incompatibleToolCalling(let message): "无法启用 Provider：\(message)"
         case .activeProviderCannotBeDeleted: "请先切换到其他 Provider，再删除当前 Provider"
         case .missingProvider: "找不到指定的 Provider"
+        case .invalidChatGPTProvider: "ChatGPT 账号 Provider 必须使用官方 ChatGPT Responses 地址"
         }
     }
 }

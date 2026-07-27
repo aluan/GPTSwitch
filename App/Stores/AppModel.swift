@@ -35,6 +35,7 @@ final class AppModel {
     private let loginItemService = LoginItemService()
     private let selfTestService = SelfTestService()
     private let healthService = ProviderHealthService()
+    private let chatGPTAuthService = ChatGPTAuthService()
     private let skinService = CodexSkinService()
     private let skinImageProcessor = SkinImageProcessor()
     private let credentialStore: any CredentialStore = KeychainCredentialStore()
@@ -145,7 +146,8 @@ final class AppModel {
                 let candidate = try makeActiveSnapshot()
                 let result = await healthService.testModel(
                     provider: candidate.profile,
-                    token: candidate.bearerToken
+                    token: candidate.bearerToken,
+                    chatGPTAccountID: candidate.chatGPTAccountID
                 )
                 let verified = try await recordProviderHealth(result, provider: candidate.profile)
                 guard result.state != .unavailable else {
@@ -177,7 +179,7 @@ final class AppModel {
             if savedConfiguration == nil {
                 savedConfiguration = try? stateStore.load()
             }
-            if let savedConfiguration {
+            if let savedConfiguration, !(error is ChatGPTAuthError) {
                 startLegacyFallback(configuration: savedConfiguration, migrationError: error)
             } else {
                 fail(error)
@@ -255,12 +257,18 @@ final class AppModel {
         lastError = nil
         Task {
             do {
-                let passthroughToken = activeProvider?.credentialMode == .passthrough
-                    ? try? configEditor.bearerToken(for: configuration)
-                    : nil
+                let bearerToken: String?
+                switch activeProvider?.credentialMode {
+                case .chatGPTAccount:
+                    bearerToken = try chatGPTAuthService.load().accessToken
+                case .passthrough:
+                    bearerToken = try? configEditor.bearerToken(for: configuration)
+                default:
+                    bearerToken = nil
+                }
                 let output = try await selfTestService.run(
                     configuration: configuration,
-                    bearerToken: passthroughToken
+                    bearerToken: bearerToken
                 )
                 selfTestImage = output
                 status = .running
@@ -283,7 +291,8 @@ final class AppModel {
                 let candidate = try makeSnapshot(for: provider)
                 let result = await healthService.testModel(
                     provider: candidate.profile,
-                    token: candidate.bearerToken
+                    token: candidate.bearerToken,
+                    chatGPTAccountID: candidate.chatGPTAccountID
                 )
                 let verified = try await recordProviderHealth(result, provider: provider)
                 guard result.state != .unavailable else {
@@ -314,7 +323,9 @@ final class AppModel {
             if providers.contains(where: { $0.id != provider.id && $0.configName == provider.configName }) {
                 throw ProviderValidationError.duplicateConfigName
             }
-            if let apiKey, !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if provider.credentialMode == .keychainBearer || provider.credentialMode == .keychainAPIKey,
+               let apiKey,
+               !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try credentialStore.setToken(apiKey, for: provider.id)
             }
             let routerSnapshot = activeProviderID == provider.id && providerRouter != nil
@@ -347,6 +358,10 @@ final class AppModel {
         checkingProviderIDs.insert(id)
         defer { checkingProviderIDs.remove(id) }
         do {
+            if provider.credentialMode == .chatGPTAccount {
+                lastError = nil
+                return provider.effectiveModelRoutes
+            }
             let token: String?
             if provider.credentialMode == .passthrough, provider.id == activeProviderID,
                let configuration {
@@ -724,7 +739,8 @@ final class AppModel {
             let candidate = try makeSnapshot(for: provider)
             let result = await healthService.testModel(
                 provider: candidate.profile,
-                token: candidate.bearerToken
+                token: candidate.bearerToken,
+                chatGPTAccountID: candidate.chatGPTAccountID
             )
             let verified = try await recordProviderHealth(result, provider: provider)
             guard result.state != .unavailable else {
@@ -745,17 +761,28 @@ final class AppModel {
                 stopProxy()
                 try configEditor.restore(current)
             }
-            var updated = try configEditor.enable(
-                port: port,
-                bridgeModel: snapshot.profile.bridgeModel
-            )
-            updated.isEnabled = true
-            try stateStore.save(updated)
-            configuration = updated
+            let updated: ProxyConfiguration
+            do {
+                updated = try configEditor.enable(
+                    port: port,
+                    bridgeModel: snapshot.profile.bridgeModel
+                )
+            } catch ConfigEditorError.alreadyUsingLoopback {
+                updated = try configEditor.adoptLoopback(
+                    port: port,
+                    bridgeModel: snapshot.profile.bridgeModel,
+                    upstreamBaseURL: verified.baseURL
+                )
+                AppLog.info("Adopted existing loopback Provider configuration")
+            }
+            var activated = updated
+            activated.isEnabled = true
+            try stateStore.save(activated)
+            configuration = activated
             inspection = nil
             _ = try modelCatalogService.sync(provider: verified)
             enableLoginItemIfPossible()
-            startProxy(with: updated, snapshot: snapshot)
+            startProxy(with: activated, snapshot: snapshot)
         } catch {
             fail(error)
         }
@@ -819,6 +846,14 @@ final class AppModel {
     }
 
     private func makeSnapshot(for provider: ProviderProfile) throws -> ActiveProviderSnapshot {
+        if provider.credentialMode == .chatGPTAccount {
+            let auth = try chatGPTAuthService.load()
+            return ActiveProviderSnapshot(
+                profile: provider,
+                bearerToken: auth.accessToken,
+                chatGPTAccountID: auth.accountID
+            )
+        }
         let token = try credentialStore.token(for: provider.id)
         if provider.credentialMode != .passthrough, token == nil {
             throw ProviderValidationError.missingCredential
@@ -832,6 +867,14 @@ final class AppModel {
         providers.compactMap { provider in
             if provider.id == defaultSnapshot.id { return defaultSnapshot }
             guard provider.healthState != .unavailable else { return nil }
+            if provider.credentialMode == .chatGPTAccount {
+                guard let auth = try? chatGPTAuthService.load() else { return nil }
+                return ActiveProviderSnapshot(
+                    profile: provider,
+                    bearerToken: auth.accessToken,
+                    chatGPTAccountID: auth.accountID
+                )
+            }
             let token = (try? credentialStore.token(for: provider.id)) ?? nil
             guard provider.credentialMode == .passthrough || token != nil else { return nil }
             return ActiveProviderSnapshot(profile: provider, bearerToken: token)
@@ -959,18 +1002,34 @@ final class AppModel {
         guard let provider = providers.first(where: { $0.id == id }) else { return }
         checkingProviderIDs.insert(id)
         Task {
-            let token: String?
-            if provider.credentialMode == .keychainBearer || provider.credentialMode == .keychainAPIKey {
-                token = try? credentialStore.token(for: id)
-            } else if provider.id == activeProviderID, let configuration {
-                token = try? configEditor.bearerToken(for: configuration)
-            } else {
-                token = nil
-            }
-            let result = modelCheck
-                ? await healthService.testModel(provider: provider, token: token)
-                : await healthService.measureEndpoint(provider: provider, token: token)
             do {
+                let token: String?
+                let accountID: String?
+                if provider.credentialMode == .chatGPTAccount {
+                    let auth = try chatGPTAuthService.load()
+                    token = auth.accessToken
+                    accountID = auth.accountID
+                } else if provider.credentialMode == .keychainBearer || provider.credentialMode == .keychainAPIKey {
+                    token = try credentialStore.token(for: id)
+                    accountID = nil
+                } else if provider.id == activeProviderID, let configuration {
+                    token = try? configEditor.bearerToken(for: configuration)
+                    accountID = nil
+                } else {
+                    token = nil
+                    accountID = nil
+                }
+                let result = modelCheck
+                    ? await healthService.testModel(
+                        provider: provider,
+                        token: token,
+                        chatGPTAccountID: accountID
+                    )
+                    : await healthService.measureEndpoint(
+                        provider: provider,
+                        token: token,
+                        chatGPTAccountID: accountID
+                    )
                 _ = try await recordProviderHealth(result, provider: provider)
             } catch {
                 fail(error)

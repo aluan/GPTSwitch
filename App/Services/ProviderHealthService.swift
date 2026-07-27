@@ -16,6 +16,9 @@ private extension Array where Element: Hashable {
 
 struct ProviderHealthService: Sendable {
     func discoverModels(provider: ProviderProfile, token: String?) async throws -> [String] {
+        if provider.credentialMode == .chatGPTAccount {
+            return provider.effectiveModelRoutes.map(\.modelID)
+        }
         let urls = ProviderEndpointResolver.urls(
             baseURL: provider.baseURL,
             endpoint: "models"
@@ -76,11 +79,41 @@ struct ProviderHealthService: Sendable {
         self.load = load
     }
 
-    func measureEndpoint(provider: ProviderProfile, token: String?) async -> ProviderHealthResult {
-        await perform(provider: provider, token: token, endpoint: "models", body: nil)
+    func measureEndpoint(
+        provider: ProviderProfile,
+        token: String?,
+        chatGPTAccountID: String? = nil
+    ) async -> ProviderHealthResult {
+        if provider.credentialMode == .chatGPTAccount {
+            let body = try? JSONSerialization.data(withJSONObject: [
+                "model": provider.effectiveTestModel,
+                "input": "Reply with OK.",
+                "max_output_tokens": 16,
+                "stream": false,
+                "store": false,
+            ])
+            return await perform(
+                provider: provider,
+                token: token,
+                chatGPTAccountID: chatGPTAccountID,
+                endpoint: "responses",
+                body: body
+            )
+        }
+        return await perform(
+            provider: provider,
+            token: token,
+            chatGPTAccountID: chatGPTAccountID,
+            endpoint: "models",
+            body: nil
+        )
     }
 
-    func testModel(provider: ProviderProfile, token: String?) async -> ProviderHealthResult {
+    func testModel(
+        provider: ProviderProfile,
+        token: String?,
+        chatGPTAccountID: String? = nil
+    ) async -> ProviderHealthResult {
         let validator: @Sendable (Data) -> String? = { data in
             Self.nativeToolCallError(in: data, protocol: provider.wireProtocol)
         }
@@ -107,6 +140,7 @@ struct ProviderHealthService: Sendable {
             return await perform(
                 provider: provider,
                 token: token,
+                chatGPTAccountID: chatGPTAccountID,
                 endpoint: "chat/completions",
                 body: body,
                 timeoutInterval: Self.modelProbeTimeout,
@@ -129,6 +163,7 @@ struct ProviderHealthService: Sendable {
             return await perform(
                 provider: provider,
                 token: token,
+                chatGPTAccountID: chatGPTAccountID,
                 endpoint: "messages",
                 body: body,
                 timeoutInterval: Self.modelProbeTimeout,
@@ -158,6 +193,7 @@ struct ProviderHealthService: Sendable {
             return await perform(
                 provider: provider,
                 token: token,
+                chatGPTAccountID: chatGPTAccountID,
                 endpoint: "responses",
                 body: body,
                 timeoutInterval: Self.modelProbeTimeout,
@@ -169,6 +205,7 @@ struct ProviderHealthService: Sendable {
     private func perform(
         provider: ProviderProfile,
         token: String?,
+        chatGPTAccountID: String?,
         endpoint: String,
         body: Data?,
         timeoutInterval: TimeInterval = 15,
@@ -186,16 +223,14 @@ struct ProviderHealthService: Sendable {
             request.timeoutInterval = max(1, timeoutInterval - Date().timeIntervalSince(startedAt))
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-            if let token, !token.isEmpty {
-                switch provider.credentialMode {
-                case .keychainAPIKey:
-                    request.setValue(token, forHTTPHeaderField: "x-api-key")
-                case .keychainBearer:
-                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                case .passthrough:
-                    break
-                }
-            }
+            ProviderRequestAuthorizer.apply(
+                ActiveProviderSnapshot(
+                    profile: provider,
+                    bearerToken: token,
+                    chatGPTAccountID: chatGPTAccountID
+                ),
+                to: &request
+            )
             if provider.wireProtocol == .anthropicMessages {
                 request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             }

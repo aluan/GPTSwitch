@@ -214,6 +214,50 @@ final class CodexModelCatalogServiceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: configURL), originalConfig)
     }
 
+    func testSyncBootstrapsWhenNativeCatalogIsMissing() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        let catalogURL = directory.appendingPathComponent("gptswitch-catalog.json")
+        let cacheURL = directory.appendingPathComponent("models_cache.json")
+        let stateURL = directory.appendingPathComponent("catalog-state.json")
+        let backupURL = directory.appendingPathComponent("native-backup.json")
+        let missingNativeCatalogURL = directory.appendingPathComponent("missing-native-catalog.json")
+        try "model = \"provider-model\"\nmodel_catalog_json = \"\(missingNativeCatalogURL.path)\"\n"
+            .write(to: configURL, atomically: true, encoding: .utf8)
+        let providerID = UUID()
+        let provider = ProviderProfile(
+            id: providerID,
+            configName: "provider",
+            displayName: "Provider",
+            baseURL: "https://example.com/v1",
+            bridgeModel: "provider-model",
+            models: [ProviderModelRoute(
+                providerID: providerID,
+                modelID: "provider-model",
+                displayName: "Provider Model"
+            )]
+        )
+
+        let result = try CodexModelCatalogService().sync(
+            provider: provider,
+            configURL: configURL,
+            catalogURL: catalogURL,
+            cacheURL: cacheURL,
+            stateURL: stateURL,
+            nativeBackupURL: backupURL
+        )
+
+        XCTAssertEqual(result.routedModelCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: catalogURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cacheURL.path))
+        let catalog = try readJSON(catalogURL)
+        let model = try XCTUnwrap((catalog["models"] as? [[String: Any]])?.first)
+        XCTAssertEqual(model["slug"] as? String, "provider/provider-model")
+        XCTAssertEqual(model["base_instructions"] as? String, "Be helpful and follow the user's instructions.")
+    }
+
     private func writeJSON(_ object: [String: Any], to url: URL) throws {
         try JSONSerialization.data(withJSONObject: object).write(to: url)
     }

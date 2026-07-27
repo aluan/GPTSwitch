@@ -77,6 +77,31 @@ final class CodexConfigEditorTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: configURL), original)
     }
 
+    func testAdoptLoopbackRecoversConfigurationWithoutSavedState() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        let original = "model = \"gpt-5\"\nmodel_provider = \"relay\"\n[model_providers.relay]\nbase_url = \"http://127.0.0.1:17891/api\""
+        try original.write(to: configURL, atomically: true, encoding: .utf8)
+
+        let configuration = try CodexConfigEditor().adoptLoopback(
+            at: configURL,
+            port: 17891,
+            bridgeModel: "gpt-5.5",
+            upstreamBaseURL: "https://relay.example/api"
+        )
+
+        XCTAssertEqual(configuration.upstreamBaseURL, "https://relay.example/api")
+        XCTAssertEqual(configuration.localBaseURL, "http://127.0.0.1:17891/api")
+        XCTAssertNil(configuration.backupPath)
+        try CodexConfigEditor().restore(configuration)
+        XCTAssertEqual(
+            try String(contentsOf: configURL),
+            "model = \"gpt-5\"\nmodel_provider = \"relay\"\n[model_providers.relay]\nbase_url = \"https://relay.example/api\""
+        )
+    }
+
     func testInspectsAllProviderSectionsAndRestoresCurrentUpstream() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -28,11 +28,14 @@ struct ProviderMigrationService: Sendable {
         do {
             for (index, inspection) in inspections.enumerated() {
                 let id = UUID()
+                let isChatGPTAccount = isChatGPTAccountProvider(inspection.baseURL)
                 let token = inspection.bearerToken
                     ?? inspection.environmentKey.flatMap { ProcessInfo.processInfo.environment[$0] }
                     ?? (inspection.isCurrent ? authAPIKey : nil)
                 let credentialMode: ProviderCredentialMode
-                if let token, !token.isEmpty {
+                if isChatGPTAccount {
+                    credentialMode = .chatGPTAccount
+                } else if let token, !token.isEmpty {
                     try credentialStore.setToken(token, for: id)
                     migratedCredentialIDs.append(id)
                     credentialMode = .keychainBearer
@@ -53,7 +56,8 @@ struct ProviderMigrationService: Sendable {
             }
             if profiles.isEmpty, let configuration {
                 let id = UUID()
-                let token = try? configEditor.bearerToken(for: configuration)
+                let isChatGPTAccount = isChatGPTAccountProvider(configuration.upstreamBaseURL)
+                let token = isChatGPTAccount ? nil : try? configEditor.bearerToken(for: configuration)
                 if let token {
                     try credentialStore.setToken(token, for: id)
                     migratedCredentialIDs.append(id)
@@ -64,7 +68,9 @@ struct ProviderMigrationService: Sendable {
                     displayName: configuration.providerName,
                     baseURL: configuration.upstreamBaseURL,
                     bridgeModel: configuration.bridgeModel,
-                    credentialMode: token == nil ? .passthrough : .keychainBearer
+                    credentialMode: isChatGPTAccount
+                        ? .chatGPTAccount
+                        : (token == nil ? .passthrough : .keychainBearer)
                 ).validated(proxyPort: proxyPort)]
                 activeID = id
             }
@@ -85,5 +91,10 @@ struct ProviderMigrationService: Sendable {
               let key = object["OPENAI_API_KEY"] as? String,
               !key.isEmpty else { return nil }
         return key
+    }
+
+    private func isChatGPTAccountProvider(_ baseURL: String) -> Bool {
+        baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .caseInsensitiveCompare(ChatGPTProviderDefaults.baseURL) == .orderedSame
     }
 }
