@@ -13,14 +13,14 @@
   <a href="https://github.com/aluan/GPTSwitch/releases/latest">下载</a>
 </p>
 
-GPTSwitch 在 Mac 本机启动原生 Swift 代理，让 Codex 同时使用 Responses API 中转站和 OpenAI-compatible Chat Completions 服务，并为只支持 Responses 托管 `image_generation` 的 Provider 补齐新版 Codex Images API。
+GPTSwitch 在 Mac 本机启动原生 Swift 代理，让 Codex 在 ChatGPT 账号登录、Responses API 中转站和 OpenAI-compatible Chat Completions 服务之间切换，并为只支持 Responses 托管 `image_generation` 的 Provider 补齐新版 Codex Images API。
 
 ## 功能
 
 - 将 `/images/generations`、`/images/edits` 转换为 Responses `image_generation`。
 - 将 Codex Responses 请求转换为 DeepSeek、GLM、通用 `/chat/completions` 和 Anthropic-compatible `/messages` 请求。
 - 将已登记的第三方模型注入 Codex App、TUI 和 CLI 模型选择器，并按 `provider/model` 路由。
-- 添加、检测、排序和快速切换多个第三方 Provider。
+- 添加、检测、排序和快速切换 ChatGPT 账号与多个第三方 Provider。
 - 查看请求、Token、延迟与估算成本统计。
 - 使用四款内置主题，或导入图片自动取色并自定义 Codex 界面。
 - 停用代理时安全恢复原 Provider 地址。
@@ -33,6 +33,8 @@ GPTSwitch 在 Mac 本机启动原生 Swift 代理，让 Codex 同时使用 Respo
 2. 将 `GPTSwitch.app` 拖入“应用程序”。
 3. 从菜单栏打开主界面，添加 Provider 并点击“应用并启动”。
 4. 完全退出并重新打开 Codex。
+
+如果使用“ChatGPT 账号登录”Provider，请先在 Codex App 或 Codex CLI 中登录 ChatGPT，确保 `~/.codex/auth.json` 包含有效登录态；不需要填写 API Key。
 
 GPTSwitch 是菜单栏工具，不显示 Dock 图标。当前公开包使用 ad-hoc 签名；如果 macOS 阻止首次打开，可在 Finder 中右键选择“打开”，或运行：
 
@@ -58,6 +60,12 @@ Codex → 127.0.0.1:17891 → Provider
 
 Codex 升级后通常无需重新配置，因为 GPTSwitch 不替换 Codex CLI，也不修改 Codex.app。
 
+### Provider 配置
+
+新建 Provider 时可选择“ChatGPT 账号登录”。GPTSwitch 会只读复用 Codex 当前的 ChatGPT access token 和账号 ID，访问 `https://chatgpt.com/backend-api/codex`，协议固定为 Responses。缺少登录态、文件损坏、账号 ID 缺失或 token 已过期时，GPTSwitch 会阻止启动并提示先重新登录 Codex；GPTSwitch 不提供独立浏览器登录，也不刷新 OAuth token。
+
+ChatGPT Provider 的模型目录来自 GPTSwitch 当前登记的原始 Codex 模型 ID，不请求内部后端的 `/models`。创建模板默认沿用当前 Codex/活动 Provider 的模型，之后仍可手动增删模型目录项；请求转发时继续按 `provider/model` 编码并向上游还原原始模型 ID。
+
 ### 第三方模型协议
 
 Provider 可以选择 `Responses API`、`Chat Completions` 或 `Anthropic Messages`。新建 Provider 提供 Responses 中转站、通用 Chat Completions、Anthropic Messages 中转站和 Anthropic 官方 API 模板；模型 ID 始终由用户填写。Chat Completions 仍可按服务兼容类型处理 `thinking`、`reasoning_effort` 和 `reasoning_content` 字段。
@@ -72,6 +80,7 @@ Anthropic Messages Provider 支持官方 `x-api-key` 和兼容中转站 Bearer �
 
 - 代理只监听 `127.0.0.1`，不会暴露到局域网或公网。
 - API Key 保存在 macOS 钥匙串，不写入数据库、日志或 Codex 配置。
+- ChatGPT OAuth 凭据只从 `~/.codex/auth.json` 读取并在内存中使用，不写入钥匙串、数据库或日志，也不会发送给第三方 Provider。
 - 统计仅记录 Provider、模型、状态码、Token 和耗时，不保存 Prompt 或响应正文。
 - 换肤通过本机 CDP 应用，不修改 Codex 安装包或签名资源。
 
@@ -80,6 +89,7 @@ Anthropic Messages Provider 支持官方 `x-api-key` 和兼容中转站 Bearer �
 ## 当前限制
 
 - 生图 Provider 需支持 HTTP Responses API 和托管 `image_generation`。
+- ChatGPT 账号模式依赖 Codex 当前使用的非公开内部端点 `chatgpt.com/backend-api/codex`，该端点可能随 Codex 更新而变化。
 - Chat Completions 和 Anthropic Messages Provider 不支持 Images API 或 Responses 托管的 `web_search`、`file_search`、`image_generation` 工具。
 - 当前 Provider 只有在健康检查未失败且凭据完整时才会进入 Codex 模型目录；上游 `/models` 不可用时需手动登记模型。
 - Anthropic Messages 适配面向兼容中转站，暂不承诺 Anthropic 官方 API 的认证与全部 Beta 能力。

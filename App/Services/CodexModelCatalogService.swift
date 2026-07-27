@@ -234,11 +234,36 @@ struct CodexModelCatalogService: Sendable {
         } else {
             sourceURL = cacheURL
         }
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            return defaultCatalogObject()
+        }
         var object = try readJSONObject(sourceURL)
         if object["models"] == nil, let data = object["data"] { object["models"] = data }
         guard object["models"] is [[String: Any]] else { throw CodexModelCatalogError.invalidCatalog }
         try writeJSONObject(object, to: backupURL)
         return object
+    }
+
+    private func defaultCatalogObject() -> [String: Any] {
+        [
+            "fetched_at": "2000-01-01T00:00:00Z",
+            "client_version": "0.0.0",
+            "models": [[
+                "slug": "gptswitch-template",
+                "display_name": "GPTSwitch",
+                "description": "GPTSwitch Provider model",
+                "base_instructions": "Be helpful and follow the user's instructions.",
+                "default_reasoning_level": "medium",
+                "supported_reasoning_levels": [
+                    ["effort": "low", "description": "Fast responses with lighter reasoning"],
+                    ["effort": "medium", "description": "Balances speed and reasoning depth"],
+                    ["effort": "high", "description": "Greater reasoning depth for complex problems"],
+                ],
+                "shell_type": "shell_command",
+                "supported_in_api": true,
+                "visibility": "list",
+            ]],
+        ]
     }
 
     private func writeModelsCache(models: [[String: Any]], to url: URL) throws {

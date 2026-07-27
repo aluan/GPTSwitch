@@ -28,7 +28,7 @@ struct ProviderDetailView: View {
                         apiKey: $apiKey,
                         hasStoredCredential: model.providerHasCredential(provider.id),
                         isDiscovering: isDiscovering,
-                        onDiscoverModels: discoverModels
+                        onDiscoverModels: draft.credentialMode == .chatGPTAccount ? nil : discoverModels
                     )
                     .padding(.top, 4)
                 }
@@ -218,6 +218,7 @@ struct ProviderEditorForm: View {
                 VStack(alignment: .leading, spacing: 4) {
                     TextField("唯一标识，如 aigocode-claude", text: $draft.configName)
                         .autocorrectionDisabled()
+                        .disabled(draft.credentialMode == .chatGPTAccount)
                     Text("需唯一，用作跨 Provider 路由标识。开启后可用「标识/模型名」指定其他 Provider；服务商名请填到「显示名称」。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -226,6 +227,7 @@ struct ProviderEditorForm: View {
             }
             row("API 地址") {
                 TextField("https://api.example.com/v1", text: $draft.baseURL)
+                    .disabled(draft.credentialMode == .chatGPTAccount)
             }
             row("API 协议") {
                 Picker("", selection: $draft.wireProtocol) {
@@ -234,6 +236,7 @@ struct ProviderEditorForm: View {
                     }
                 }
                 .labelsHidden()
+                .disabled(draft.credentialMode == .chatGPTAccount)
             }
             if draft.wireProtocol != .responses {
                 if draft.wireProtocol == .chatCompletions {
@@ -264,6 +267,11 @@ struct ProviderEditorForm: View {
                     }
                 }
                 .labelsHidden()
+                .onChange(of: draft.credentialMode) {
+                    guard draft.credentialMode == .chatGPTAccount else { return }
+                    draft.baseURL = ChatGPTProviderDefaults.baseURL
+                    draft.wireProtocol = .responses
+                }
             }
             if draft.credentialMode == .keychainBearer || draft.credentialMode == .keychainAPIKey {
                 row("API Key") {
@@ -308,7 +316,9 @@ struct ProviderEditorForm: View {
 
     private var availableCredentialModes: [ProviderCredentialMode] {
         switch draft.wireProtocol {
-        case .responses, .chatCompletions:
+        case .responses:
+            return [.keychainBearer, .passthrough, .chatGPTAccount]
+        case .chatCompletions:
             return [.keychainBearer, .passthrough]
         case .anthropicMessages:
             return [.keychainAPIKey, .keychainBearer, .passthrough]

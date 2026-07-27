@@ -158,18 +158,32 @@ enum ProviderRoutingError: LocalizedError, Equatable {
 
 enum ProviderRequestAuthorizer {
     static func apply(_ provider: ActiveProviderSnapshot, to request: inout URLRequest) {
-        guard let token = provider.bearerToken, !token.isEmpty else { return }
         switch provider.profile.credentialMode {
         case .keychainBearer:
+            guard let token = provider.bearerToken, !token.isEmpty else { return }
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.setValue(nil, forHTTPHeaderField: "api-key")
             request.setValue(nil, forHTTPHeaderField: "x-api-key")
         case .keychainAPIKey:
+            guard let token = provider.bearerToken, !token.isEmpty else { return }
             request.setValue(token, forHTTPHeaderField: "x-api-key")
             request.setValue(nil, forHTTPHeaderField: "Authorization")
             request.setValue(nil, forHTTPHeaderField: "api-key")
         case .passthrough:
             break
+        case .chatGPTAccount:
+            if request.value(forHTTPHeaderField: "Authorization") == nil,
+               let token = provider.bearerToken,
+               !token.isEmpty {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            if request.value(forHTTPHeaderField: "ChatGPT-Account-Id") == nil,
+               let accountID = provider.chatGPTAccountID,
+               !accountID.isEmpty {
+                request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+            }
+            request.setValue(nil, forHTTPHeaderField: "api-key")
+            request.setValue(nil, forHTTPHeaderField: "x-api-key")
         }
     }
 }

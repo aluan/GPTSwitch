@@ -418,6 +418,7 @@ private struct ProviderCardRow: View {
 }
 
 private enum ProviderCreationTemplate: String, CaseIterable {
+    case chatGPTAccount
     case responses
     case compatibleChat
     case compatibleAnthropic
@@ -425,6 +426,7 @@ private enum ProviderCreationTemplate: String, CaseIterable {
 
     var title: String {
         switch self {
+        case .chatGPTAccount: "ChatGPT 账号登录"
         case .responses: "Codex 原生中转站"
         case .compatibleChat: "OpenAI 兼容中转站"
         case .compatibleAnthropic: "Claude 中转站（第三方）"
@@ -435,6 +437,7 @@ private enum ProviderCreationTemplate: String, CaseIterable {
     /// 面向普通用户的适用说明：按"我的服务属于哪种"来选，而非协议名。
     var description: String {
         switch self {
+        case .chatGPTAccount: "复用 Codex 已登录的 ChatGPT 账号，不使用 API Key。"
         case .responses: "中转站支持 Codex 原生协议，功能最完整。如果中转站文档提到 Responses API 或可直接用于 Codex，选这个。"
         case .compatibleChat: "中转站只提供 OpenAI 兼容接口（多数国产 / 聚合 API 属于此类）。GPTSwitch 会做协议转换。"
         case .compatibleAnthropic: "第三方中转站提供 Claude 模型（走 Anthropic 协议）。区别于官方直连。"
@@ -521,6 +524,17 @@ private struct ProviderCreateView: View {
 
     private func applyTemplate(_ template: ProviderCreationTemplate) {
         switch template {
+        case .chatGPTAccount:
+            let modelID = model.activeProvider?.effectiveModelRoutes.first?.modelID
+                ?? model.activeProvider?.bridgeModel
+                ?? model.inspection?.model
+                ?? "gpt-5"
+            draft = ChatGPTProviderDefaults.profile(
+                id: draft.id,
+                modelID: modelID,
+                sortOrder: draft.sortOrder
+            )
+            apiKey = ""
         case .responses:
             draft.displayName = "Responses Provider"
             draft.baseURL = "https://api.example.com/v1"

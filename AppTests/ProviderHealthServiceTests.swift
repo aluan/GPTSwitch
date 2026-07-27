@@ -92,6 +92,78 @@ final class ProviderHealthServiceTests: XCTestCase {
         XCTAssertNil(object["tool_choice"])
     }
 
+    func testChatGPTModelCheckUsesAccountAuthentication() async throws {
+        let recorder = HealthRequestRecorder()
+        let service = ProviderHealthService { request in
+            await recorder.response(for: request)
+        }
+        let provider = ProviderProfile(
+            configName: "chatgpt",
+            displayName: "ChatGPT",
+            baseURL: ChatGPTProviderDefaults.baseURL,
+            bridgeModel: "gpt-5",
+            credentialMode: .chatGPTAccount
+        )
+
+        let result = await service.testModel(
+            provider: provider,
+            token: "access-token",
+            chatGPTAccountID: "account-test"
+        )
+
+        XCTAssertEqual(result.state, .healthy)
+        let requests = await recorder.requests
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.url?.absoluteString, "\(ChatGPTProviderDefaults.baseURL)/responses")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access-token")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "ChatGPT-Account-Id"), "account-test")
+        XCTAssertNil(request.value(forHTTPHeaderField: "x-api-key"))
+    }
+
+    func testChatGPTEndpointCheckUsesResponsesInsteadOfModels() async throws {
+        let recorder = HealthRequestRecorder()
+        let service = ProviderHealthService { request in
+            await recorder.response(for: request)
+        }
+        let provider = ChatGPTProviderDefaults.profile(
+            id: UUID(),
+            modelID: "gpt-current",
+            sortOrder: 0
+        )
+
+        let result = await service.measureEndpoint(
+            provider: provider,
+            token: "access-token",
+            chatGPTAccountID: "account-test"
+        )
+
+        XCTAssertEqual(result.state, .healthy)
+        let requests = await recorder.requests
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.url?.absoluteString, "\(ChatGPTProviderDefaults.baseURL)/responses")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access-token")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "ChatGPT-Account-Id"), "account-test")
+    }
+
+    func testChatGPTModelDiscoveryUsesLocalCatalogWithoutNetwork() async throws {
+        let recorder = HealthRequestRecorder()
+        let service = ProviderHealthService { request in
+            await recorder.response(for: request)
+        }
+        let provider = ChatGPTProviderDefaults.profile(
+            id: UUID(),
+            modelID: "gpt-current",
+            sortOrder: 0
+        )
+
+        let models = try await service.discoverModels(provider: provider, token: nil)
+
+        XCTAssertEqual(models, ["gpt-current"])
+        let requests = await recorder.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
     func testModelsCheckDoesNotDuplicateExistingV1Path() async {
         let urls = ProviderEndpointResolver.urls(baseURL: "https://relay.example/api/v1", endpoint: "models")
         XCTAssertEqual(urls.map(\.absoluteString), ["https://relay.example/api/v1/models"])

@@ -64,6 +64,42 @@ final class ProviderMigrationTests: XCTestCase {
         XCTAssertFalse(String(decoding: try Data(contentsOf: databaseURL), as: UTF8.self).contains("one-secret"))
         XCTAssertFalse(String(decoding: try Data(contentsOf: databaseURL), as: UTF8.self).contains("two-secret"))
     }
+
+    func testMigratesOfficialCodexBackendAsChatGPTAccountProvider() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        let authURL = directory.appendingPathComponent("auth.json")
+        let databaseURL = directory.appendingPathComponent("gptswitch.sqlite3")
+        let config = """
+        model = "gpt-current"
+        model_provider = "chatgpt"
+
+        [model_providers.chatgpt]
+        name = "ChatGPT"
+        base_url = "https://chatgpt.com/backend-api/codex/"
+        """
+        try config.write(to: configURL, atomically: true, encoding: .utf8)
+        try Data(#"{"auth_mode":"chatgpt","tokens":{"access_token":"secret","account_id":"account"}}"#.utf8)
+            .write(to: authURL)
+        let credentials = TestCredentialStore()
+        let database = try AppDatabase(url: databaseURL)
+
+        try await ProviderMigrationService(credentialStore: credentials).migrateIfNeeded(
+            database: database,
+            configuration: nil,
+            proxyPort: 17_891,
+            configURL: configURL,
+            authURL: authURL
+        )
+
+        let providers = try await database.providers()
+        let provider = try XCTUnwrap(providers.first)
+        XCTAssertEqual(provider.credentialMode, .chatGPTAccount)
+        XCTAssertEqual(provider.baseURL, ChatGPTProviderDefaults.baseURL)
+        XCTAssertNil(try credentials.token(for: provider.id))
+    }
 }
 
 private final class TestCredentialStore: CredentialStore, @unchecked Sendable {
