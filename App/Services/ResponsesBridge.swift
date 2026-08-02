@@ -60,12 +60,15 @@ struct ResponsesBridge: Sendable {
                 }
             }
         }
+        // ChatGPT 账号后端强制 stream=true（否则 HTTP 400 "Stream must be set
+        // to true"），其他 Responses 提供商沿用非流式以便直接解析 JSON。
+        let requiresStream = provider.profile.credentialMode == .chatGPTAccount
         let payload: [String: Any] = [
             "model": provider.bridgeModel,
             "input": [["role": "user", "content": content]],
             "tools": [["type": "image_generation", "output_format": "png"]],
             "tool_choice": ["type": "image_generation"],
-            "stream": false,
+            "stream": requiresStream,
             "store": false,
         ]
         let upstreamURL = try responsesURL(provider.upstreamBaseURL)
@@ -120,19 +123,26 @@ struct ResponsesBridge: Sendable {
         if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
             return try JSONSerialization.jsonObject(with: data)
         }
-        if contentType?.lowercased().contains("text/event-stream") == true {
-            var events: [Any] = []
-            for line in text.components(separatedBy: .newlines) where line.hasPrefix("data:") {
-                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                guard payload != "[DONE]", let eventData = payload.data(using: .utf8),
-                      let event = try? JSONSerialization.jsonObject(with: eventData) else {
-                    continue
-                }
-                events.append(event)
-            }
-            return events
+        // ChatGPT 账号后端以 SSE 返回，但响应头往往不带 Content-Type（实测为
+        // nil），因此既按声明类型、也按内容（"data:" / "event:" 行）识别 SSE。
+        let declaredSSE = contentType?.lowercased().contains("text/event-stream") == true
+        let looksLikeSSE = trimmed.hasPrefix("event:") || trimmed.hasPrefix("data:")
+        guard declaredSSE || looksLikeSSE else {
+            throw ResponsesBridgeError.invalidUpstreamResponse
         }
-        throw ResponsesBridgeError.invalidUpstreamResponse
+        var events: [Any] = []
+        for line in text.components(separatedBy: .newlines) where line.hasPrefix("data:") {
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            guard payload != "[DONE]", let eventData = payload.data(using: .utf8),
+                  let event = try? JSONSerialization.jsonObject(with: eventData) else {
+                continue
+            }
+            events.append(event)
+        }
+        guard !events.isEmpty else {
+            throw ResponsesBridgeError.invalidUpstreamResponse
+        }
+        return events
     }
 
     private func findImageCall(in value: Any) -> [String: Any]? {

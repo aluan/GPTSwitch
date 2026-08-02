@@ -130,6 +130,7 @@ final class AppModel {
                 configuration: saved,
                 proxyPort: migrationPort
             )
+            try await providerMigrationService.ensureBuiltInChatGPTModels(database: database)
             if let catalog = try? BuiltInPricingCatalog().load() {
                 try await database.seedBuiltInPricingRules(catalog.rules, version: catalog.version)
             }

@@ -254,7 +254,11 @@ final class NativeProxyServer: @unchecked Sendable {
                 }
                 upstreamStatus = response.statusCode
                 guard (200..<300).contains(response.statusCode) else {
-                    throw ResponsesBridgeError.upstreamFailure(response.statusCode, "上游请求失败")
+                    throw ResponsesBridgeError.upstreamFailure(
+                        response.statusCode,
+                        upstreamErrorMessage(statusCode: response.statusCode, data: data)
+                            ?? "上游请求失败"
+                    )
                 }
                 let result = try bridge.parseImageResult(
                     data: data,
@@ -422,6 +426,19 @@ final class NativeProxyServer: @unchecked Sendable {
         if error is URLError { return "network_error" }
         if error is ResponsesBridgeError { return "bridge_error" }
         return "proxy_error"
+    }
+
+    /// 从上游 4xx/5xx 响应体里提取可读错误信息，便于定位。
+    private func upstreamErrorMessage(statusCode: Int, data: Data) -> String? {
+        guard !data.isEmpty else { return nil }
+        let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let detail = ((root?["error"] as? [String: Any])?["message"] as? String)
+            ?? (root?["message"] as? String)
+            ?? (root?["detail"] as? String)
+            ?? String(data: data, encoding: .utf8)
+        guard let detail, !detail.isEmpty else { return nil }
+        let normalized = detail.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return String(normalized.prefix(300))
     }
 }
 

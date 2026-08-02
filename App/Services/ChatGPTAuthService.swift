@@ -3,7 +3,39 @@ import Foundation
 enum ChatGPTProviderDefaults {
     static let baseURL = "https://chatgpt.com/backend-api/codex"
     static let configName = "chatgpt"
+    /// 默认内置模型：随安装一并创建，供 ChatGPT 账号直接使用。
+    /// GPT-5.6 为系列模型，含 Sol / Terra / Luna 三个变体。
+    static let defaultModelIDs = ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
 
+    /// 内置 ChatGPT 账号 Provider：默认携带 gpt-5.5 / gpt-5.6 两个模型，
+    /// 主桥接模型取首个（gpt-5.5）。
+    static func profile(
+        id: UUID,
+        sortOrder: Int
+    ) -> ProviderProfile {
+        var profile = ProviderProfile(
+            id: id,
+            configName: configName,
+            displayName: "ChatGPT 账号",
+            baseURL: baseURL,
+            bridgeModel: defaultModelIDs.first ?? "gpt-5.5",
+            website: "https://chatgpt.com",
+            sortOrder: sortOrder,
+            credentialMode: .chatGPTAccount
+        )
+        profile.models = defaultModelIDs.enumerated().map { index, modelID in
+            ProviderModelRoute(
+                providerID: id,
+                modelID: modelID,
+                displayName: modelID,
+                inputModalities: ["text", "image"],
+                sortOrder: index
+            )
+        }
+        return profile
+    }
+
+    /// 单模型构造（用于 UI 模板按当前模型新建）。
     static func profile(
         id: UUID,
         modelID: String,

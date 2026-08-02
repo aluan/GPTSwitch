@@ -85,13 +85,18 @@ struct ProviderHealthService: Sendable {
         chatGPTAccountID: String? = nil
     ) async -> ProviderHealthResult {
         if provider.credentialMode == .chatGPTAccount {
-            let body = try? JSONSerialization.data(withJSONObject: [
-                "model": provider.effectiveTestModel,
-                "input": "Reply with OK.",
-                "max_output_tokens": 16,
-                "stream": false,
-                "store": false,
-            ])
+            // ChatGPT 账号后端强制要求 stream=true，否则返回 HTTP 400
+            // "Stream must be set to true"；且不接受 max_output_tokens 等
+            // Responses API 通用参数（返回 "Unsupported parameter"）。
+            // 因此探针以流式发起，仅携带后端认可的字段，并在
+            // nativeToolCallError 中解析 SSE 事件提取 function_call。
+            let body = try? JSONSerialization.data(withJSONObject: Self.chatGPTProbeBody(
+                model: provider.effectiveTestModel,
+                input: [[
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Reply with OK."]],
+                ]]
+            ))
             return await perform(
                 provider: provider,
                 token: token,
@@ -170,26 +175,45 @@ struct ProviderHealthService: Sendable {
                 validate: validator
             )
         case .responses:
-            let body = try? JSONSerialization.data(withJSONObject: [
-                "model": provider.effectiveTestModel,
-                "input": [[
-                    "role": "user",
-                    "content": [[
-                        "type": "input_text",
-                        "text": Self.probePrompt,
+            let body: Data?
+            if provider.credentialMode == .chatGPTAccount {
+                // ChatGPT 账号后端：stream 必须为 true，且不接受 max_output_tokens。
+                body = try? JSONSerialization.data(withJSONObject: Self.chatGPTProbeBody(
+                    model: provider.effectiveTestModel,
+                    input: [[
+                        "role": "user",
+                        "content": [["type": "input_text", "text": Self.probePrompt]],
                     ]],
-                ]],
-                "tools": [[
-                    "type": "function",
-                    "name": Self.probeName,
-                    "description": "Verify native tool calling support.",
-                    "parameters": Self.probeSchema,
-                    "strict": true,
-                ]],
-                "max_output_tokens": 64,
-                "stream": false,
-                "store": false,
-            ])
+                    tools: [[
+                        "type": "function",
+                        "name": Self.probeName,
+                        "description": "Verify native tool calling support.",
+                        "parameters": Self.probeSchema,
+                        "strict": true,
+                    ]]
+                ))
+            } else {
+                body = try? JSONSerialization.data(withJSONObject: [
+                    "model": provider.effectiveTestModel,
+                    "input": [[
+                        "role": "user",
+                        "content": [[
+                            "type": "input_text",
+                            "text": Self.probePrompt,
+                        ]],
+                    ]],
+                    "tools": [[
+                        "type": "function",
+                        "name": Self.probeName,
+                        "description": "Verify native tool calling support.",
+                        "parameters": Self.probeSchema,
+                        "strict": true,
+                    ]],
+                    "max_output_tokens": 64,
+                    "stream": false,
+                    "store": false,
+                ])
+            }
             return await perform(
                 provider: provider,
                 token: token,
@@ -222,6 +246,10 @@ struct ProviderHealthService: Sendable {
             request.httpBody = body
             request.timeoutInterval = max(1, timeoutInterval - Date().timeIntervalSince(startedAt))
             request.setValue("application/json", forHTTPHeaderField: "Accept")
+            // 显式要求 identity 编码：部分上游（如 ChatGPT 账号后端）可能返回
+            // brotli，URLSession 不会自动解压 brotli，会导致探针拿到二进制乱码、
+            // 解析失败。要求 identity 规避该问题。
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
             if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
             ProviderRequestAuthorizer.apply(
                 ActiveProviderSnapshot(
@@ -292,18 +320,21 @@ struct ProviderHealthService: Sendable {
         in data: Data,
         protocol wireProtocol: ProviderWireProtocol
     ) -> String? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let root = parseProbePayload(data) else {
             return "模型未返回可解析的原生工具调用，无法用于 Codex"
         }
         let returnedName: String?
         let returnedInput: String?
         switch wireProtocol {
         case .responses:
-            let output = root["output"] as? [[String: Any]] ?? []
-            let call = output.first(where: { $0["type"] as? String == "function_call" })
+            // Responses 既可能返回非流式 JSON（{ "output": [...] }），
+            // 也可能返回 SSE 事件流（ChatGPT 账号要求 stream=true）。
+            // 递归查找首个 function_call 即可同时覆盖两种形态。
+            let call = findFunctionCall(in: root)
             returnedName = call?["name"] as? String
             returnedInput = decodedProbeInput(call?["arguments"])
         case .chatCompletions:
+            let root = root as? [String: Any] ?? [:]
             let choices = root["choices"] as? [[String: Any]] ?? []
             let message = choices.first?["message"] as? [String: Any]
             let calls = message?["tool_calls"] as? [[String: Any]] ?? []
@@ -311,6 +342,7 @@ struct ProviderHealthService: Sendable {
             returnedName = function?["name"] as? String
             returnedInput = decodedProbeInput(function?["arguments"])
         case .anthropicMessages:
+            let root = root as? [String: Any] ?? [:]
             let content = root["content"] as? [[String: Any]] ?? []
             let call = content.first(where: { $0["type"] as? String == "tool_use" })
             returnedName = call?["name"] as? String
@@ -319,6 +351,70 @@ struct ProviderHealthService: Sendable {
         return returnedName == probeName && returnedInput?.isEmpty == false
             ? nil
             : "模型不支持原生结构化工具调用，无法用于 Codex"
+    }
+
+    /// ChatGPT 账号探针请求体：仅携带后端认可的字段。
+    /// 实测约束：stream 必须为 true、store 必须为 false、input 必须为数组形态、
+    /// 不接受 max_output_tokens（这些不满足时后端返回 HTTP 400）。
+    private static func chatGPTProbeBody(
+        model: String,
+        input: Any,
+        tools: [[String: Any]]? = nil
+    ) -> [String: Any] {
+        var body: [String: Any] = [
+            "model": model,
+            "input": input,
+            "stream": true,
+            "store": false,
+        ]
+        if let tools { body["tools"] = tools }
+        return body
+    }
+
+    /// 解析探针响应：兼容非流式 JSON 与 SSE 事件流。
+    private static func parseProbePayload(_ data: Data) -> Any? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
+            return try? JSONSerialization.jsonObject(with: data)
+        }
+        // SSE：逐行提取 "data:" 负载并解析为 JSON 对象。
+        var events: [Any] = []
+        for line in text.components(separatedBy: .newlines) where line.hasPrefix("data:") {
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            guard payload != "[DONE]",
+                  let eventData = payload.data(using: .utf8),
+                  let event = try? JSONSerialization.jsonObject(with: eventData) else {
+                continue
+            }
+            events.append(event)
+        }
+        return events.isEmpty ? nil : events
+    }
+
+    /// 在任意 JSON 结构中递归查找 function_call 项。
+    /// SSE 流中同一 function_call 会先以 `response.output_item.added` 出现
+    /// （arguments 为空串），随后才以 `response.output_item.done` 出现
+    /// （arguments 为完整参数）。优先返回 arguments 可解出非空 input 的那个，
+    /// 否则回退到首个命中的 function_call。
+    private static func findFunctionCall(in value: Any) -> [String: Any]? {
+        var best: [String: Any]?
+        var fallback: [String: Any]?
+        func search(_ v: Any) {
+            if let dictionary = v as? [String: Any] {
+                if dictionary["type"] as? String == "function_call" {
+                    fallback = dictionary
+                    if decodedProbeInput(dictionary["arguments"])?.isEmpty == false {
+                        best = dictionary
+                    }
+                }
+                for nested in dictionary.values { search(nested) }
+            } else if let array = v as? [Any] {
+                for nested in array { search(nested) }
+            }
+        }
+        search(value)
+        return best ?? fallback
     }
 
     private static func decodedProbeInput(_ arguments: Any?) -> String? {

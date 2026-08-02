@@ -54,10 +54,14 @@ final class ProviderMigrationTests: XCTestCase {
         )
 
         let providers = try await database.providers()
-        XCTAssertEqual(providers.count, 2)
+        // 两个迁移来的 Provider + 首次安装内置的 ChatGPT 账号 Provider。
+        XCTAssertEqual(providers.count, 3)
         XCTAssertEqual(providers[0].baseURL, "https://one.example/v1")
         XCTAssertEqual(try credentials.token(for: providers[0].id), "one-secret")
         XCTAssertEqual(try credentials.token(for: providers[1].id), "two-secret")
+        let chatGPT = try XCTUnwrap(providers.first { $0.credentialMode == .chatGPTAccount })
+        XCTAssertEqual(chatGPT.baseURL, ChatGPTProviderDefaults.baseURL)
+        XCTAssertEqual(chatGPT.models.map(\.modelID), ChatGPTProviderDefaults.defaultModelIDs)
         let activeProviderID = try await database.activeProviderID()
         XCTAssertEqual(activeProviderID, providers[0].id)
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), config)
@@ -99,6 +103,69 @@ final class ProviderMigrationTests: XCTestCase {
         XCTAssertEqual(provider.credentialMode, .chatGPTAccount)
         XCTAssertEqual(provider.baseURL, ChatGPTProviderDefaults.baseURL)
         XCTAssertNil(try credentials.token(for: provider.id))
+    }
+
+    func testSeedsDefaultChatGPTProviderWhenNoProvidersExist() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        let authURL = directory.appendingPathComponent("auth.json")
+        let databaseURL = directory.appendingPathComponent("gptswitch.sqlite3")
+        // 全新安装：Codex 配置为空，也无已保存 ProxyConfiguration。
+        try Data().write(to: configURL)
+        try Data().write(to: authURL)
+        let credentials = TestCredentialStore()
+        let database = try AppDatabase(url: databaseURL)
+
+        try await ProviderMigrationService(credentialStore: credentials).migrateIfNeeded(
+            database: database,
+            configuration: nil,
+            proxyPort: 17_891,
+            configURL: configURL,
+            authURL: authURL
+        )
+
+        let providers = try await database.providers()
+        let provider = try XCTUnwrap(providers.first)
+        XCTAssertEqual(provider.credentialMode, .chatGPTAccount)
+        XCTAssertEqual(provider.configName, ChatGPTProviderDefaults.configName)
+        XCTAssertEqual(provider.bridgeModel, "gpt-5.5")
+        XCTAssertEqual(provider.models.map(\.modelID), ChatGPTProviderDefaults.defaultModelIDs)
+        let activeID = try await database.activeProviderID()
+        XCTAssertEqual(activeID, provider.id)
+    }
+
+    func testEnsureBuiltInChatGPTModelsBackfillsMissingModels() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("gptswitch.sqlite3")
+        let credentials = TestCredentialStore()
+        let database = try AppDatabase(url: databaseURL)
+
+        // 老用户 DB：ChatGPT 账号 Provider 仅有 gpt-5.5。
+        var provider = ChatGPTProviderDefaults.profile(id: UUID(), sortOrder: 0)
+        provider.bridgeModel = "gpt-5.5"
+        provider.models = [ProviderModelRoute(
+            providerID: provider.id,
+            modelID: "gpt-5.5",
+            displayName: "gpt-5.5",
+            inputModalities: ["text", "image"]
+        )]
+        try await database.importProvidersIfEmpty([provider], activeProviderID: provider.id)
+
+        try await ProviderMigrationService(credentialStore: credentials)
+            .ensureBuiltInChatGPTModels(database: database)
+
+        let reloaded = try await database.providers().first { $0.id == provider.id }
+        let reloadedProvider = try XCTUnwrap(reloaded)
+        XCTAssertEqual(reloadedProvider.models.map(\.modelID), ChatGPTProviderDefaults.defaultModelIDs)
+        // 已有模型不被重复添加。
+        try await ProviderMigrationService(credentialStore: credentials)
+            .ensureBuiltInChatGPTModels(database: database)
+        let again = try await database.providers().first { $0.id == provider.id }
+        XCTAssertEqual(again?.models.count, ChatGPTProviderDefaults.defaultModelIDs.count)
     }
 }
 

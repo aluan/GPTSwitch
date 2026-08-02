@@ -120,6 +120,59 @@ final class ProviderHealthServiceTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "x-api-key"))
     }
 
+    func testChatGPTModelCheckRequiresStreamingAndParsesSSE() async throws {
+        let recorder = HealthRequestRecorder()
+        let service = ProviderHealthService { request in
+            await recorder.response(for: request)
+        }
+        let provider = ProviderProfile(
+            configName: "chatgpt",
+            displayName: "ChatGPT",
+            baseURL: ChatGPTProviderDefaults.baseURL,
+            bridgeModel: "gpt-5",
+            credentialMode: .chatGPTAccount
+        )
+
+        let result = await service.testModel(provider: provider, token: "access-token", chatGPTAccountID: "account-test")
+
+        XCTAssertEqual(result.state, .healthy)
+        let requests = await recorder.requests
+        let request = try XCTUnwrap(requests.first)
+        let body = try XCTUnwrap(request.httpBody)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        // ChatGPT 账号后端强制 stream=true、store=false，否则返回 HTTP 400。
+        XCTAssertEqual(object["stream"] as? Bool, true)
+        XCTAssertEqual(object["store"] as? Bool, false)
+        // 且不接受 max_output_tokens（返回 "Unsupported parameter"）。
+        XCTAssertNil(object["max_output_tokens"])
+    }
+
+    func testChatGPTModelCheckRejectsStream400Error() async {
+        let service = ProviderHealthService { request in
+            let data = Data(#"{"error":{"message":"Stream must be set to true"}}"#.utf8)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 400,
+                httpVersion: "HTTP/1.1",
+                headerFields: nil
+            )!
+            return (data, response)
+        }
+        let provider = ProviderProfile(
+            configName: "chatgpt",
+            displayName: "ChatGPT",
+            baseURL: ChatGPTProviderDefaults.baseURL,
+            bridgeModel: "gpt-5",
+            credentialMode: .chatGPTAccount
+        )
+
+        let result = await service.testModel(provider: provider, token: "access-token", chatGPTAccountID: "account-test")
+
+        XCTAssertEqual(result.state, .unavailable)
+        XCTAssertEqual(result.statusCode, 400)
+        XCTAssertEqual(result.message, "HTTP 400：Stream must be set to true")
+    }
+
     func testChatGPTEndpointCheckUsesResponsesInsteadOfModels() async throws {
         let recorder = HealthRequestRecorder()
         let service = ProviderHealthService { request in
@@ -318,7 +371,36 @@ private actor HealthRequestRecorder {
         let data: Data
         switch request.url?.lastPathComponent {
         case "responses":
-            data = Data(#"{"output":[{"type":"function_call","name":"exec","arguments":"{\"input\":\"pwd\"}"}]}"#.utf8)
+            // ChatGPT 账号探针以 stream=true 发起，后端以 SSE 返回 function_call。
+            if let body = request.httpBody,
+               let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               object["stream"] as? Bool == true {
+                // 真实 SSE 形态：function_call 先以 output_item.added 出现
+                // （arguments 为空串），随后才以 output_item.done 出现并带上完整参数。
+                let added = try! JSONSerialization.data(withJSONObject: [
+                    "type": "response.output_item.added",
+                    "item": [
+                        "type": "function_call",
+                        "name": "exec",
+                        "arguments": "",
+                    ] as [String: Any],
+                ])
+                let done = try! JSONSerialization.data(withJSONObject: [
+                    "type": "response.output_item.done",
+                    "item": [
+                        "type": "function_call",
+                        "name": "exec",
+                        "arguments": "{\"input\":\"pwd\"}",
+                    ] as [String: Any],
+                ])
+                let completed = try! JSONSerialization.data(withJSONObject: [
+                    "type": "response.completed",
+                ])
+                let sse = "data: \(String(data: added, encoding: .utf8)!)\n\ndata: \(String(data: done, encoding: .utf8)!)\n\ndata: \(String(data: completed, encoding: .utf8)!)\n\ndata: [DONE]\n\n"
+                data = Data(sse.utf8)
+            } else {
+                data = Data(#"{"output":[{"type":"function_call","name":"exec","arguments":"{\"input\":\"pwd\"}"}]}"#.utf8)
+            }
         case "chat", "completions":
             data = Data(#"{"choices":[{"message":{"tool_calls":[{"type":"function","function":{"name":"exec","arguments":"{\"input\":\"pwd\"}"}}]}}]}"#.utf8)
         case "messages":
