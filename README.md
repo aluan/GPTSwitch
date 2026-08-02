@@ -88,6 +88,7 @@ Anthropic Messages Provider 支持官方 `x-api-key` 和兼容中转站 Bearer �
 
 ## 当前限制
 
+- **ChatGPT.app Codex 界面（Framework）无法使用第三方模型**：ChatGPT.app 内集成的 Codex（`Codex Framework.framework`，150.x）用 ChatGPT 账号直连 `chatgpt.com/backend-api/codex`，不读 `~/.codex/config.toml` 的 `base_url`，请求不经 GPTSwitch 代理；其模型列表又把 `model_catalog_json` 与 chatgpt 后端已知模型取交集后显示，注入的第三方模型会被过滤。因此 Framework 只能列出并使用原生模型。第三方模型请在 **Codex CLI** 中使用（CLI 读 `base_url` 走 GPTSwitch 代理，可路由到第三方 Provider）。GPTSwitch 已保证 catalog 同时保留原生模型，使 Framework 列表不空白。
 - 生图 Provider 需支持 HTTP Responses API 和托管 `image_generation`。
 - ChatGPT 账号模式依赖 Codex 当前使用的非公开内部端点 `chatgpt.com/backend-api/codex`，该端点可能随 Codex 更新而变化。
 - Chat Completions 和 Anthropic Messages Provider 不支持 Images API 或 Responses 托管的 `web_search`、`file_search`、`image_generation` 工具。
