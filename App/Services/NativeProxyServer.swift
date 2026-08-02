@@ -141,7 +141,11 @@ final class NativeProxyServer: @unchecked Sendable {
     private func serveModels(_ request: IncomingHTTPRequest, connection: NWConnection) {
         do {
             let query = URLComponents(string: request.target)?.queryItems ?? []
-            let codexShape = query.contains { $0.name == "client_version" }
+            let userAgent = (request.headers.first(where: { $0.key.lowercased() == "user-agent" })?.value ?? "").lowercased()
+            // codex 的 models-manager 期望 {models:[...]} 形态（含全字段）。
+            // 仅靠 client_version 查询参数判断会漏掉不带该参数的 codex 版本，
+            // 导致返回精简 {object:list,data:[...]} → codex 解析不到模型，列表为空。
+            let codexShape = query.contains { $0.name == "client_version" } || userAgent.contains("codex")
             let data = try CodexModelCatalogService().modelsResponse(
                 provider: providerRouter.snapshot().profile,
                 codexShape: codexShape,
