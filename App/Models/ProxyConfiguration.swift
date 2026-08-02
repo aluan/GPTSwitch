@@ -1,7 +1,7 @@
 import Foundation
 
 struct ProxyConfiguration: Codable, Equatable, Sendable {
-    static let currentToolVersion = "1.4.0"
+    static let currentToolVersion = "1.4.1"
 
     var toolVersion: String
     var configPath: String
@@ -13,6 +13,10 @@ struct ProxyConfiguration: Codable, Equatable, Sendable {
     var backupPath: String?
     var installedAt: Date
     var isEnabled: Bool
+    /// 标记当前 provider 段是否由 GPTSwitch 注入（裸 ChatGPT 账号流场景）。
+    /// true：restore 时移除整个注入段 + model_provider 行，还原成裸流；
+    /// false：restore 时仅改写 base_url 到上游（保留用户已有的段）。
+    var providerSectionInjected: Bool
 
     init(
         toolVersion: String = Self.currentToolVersion,
@@ -24,7 +28,8 @@ struct ProxyConfiguration: Codable, Equatable, Sendable {
         port: UInt16,
         backupPath: String?,
         installedAt: Date = Date(),
-        isEnabled: Bool = true
+        isEnabled: Bool = true,
+        providerSectionInjected: Bool = false
     ) {
         self.toolVersion = toolVersion
         self.configPath = configPath
@@ -36,6 +41,7 @@ struct ProxyConfiguration: Codable, Equatable, Sendable {
         self.backupPath = backupPath
         self.installedAt = installedAt
         self.isEnabled = isEnabled
+        self.providerSectionInjected = providerSectionInjected
     }
 
     enum CodingKeys: String, CodingKey {
@@ -49,6 +55,7 @@ struct ProxyConfiguration: Codable, Equatable, Sendable {
         case backupPath = "backup_path"
         case installedAt = "installed_at"
         case isEnabled = "is_enabled"
+        case providerSectionInjected = "provider_section_injected"
     }
 
     init(from decoder: Decoder) throws {
@@ -67,6 +74,7 @@ struct ProxyConfiguration: Codable, Equatable, Sendable {
             installedAt = try container.decodeIfPresent(Date.self, forKey: .installedAt) ?? Date()
         }
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        providerSectionInjected = try container.decodeIfPresent(Bool.self, forKey: .providerSectionInjected) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -81,6 +89,7 @@ struct ProxyConfiguration: Codable, Equatable, Sendable {
         try container.encodeIfPresent(backupPath, forKey: .backupPath)
         try container.encode(installedAt.timeIntervalSince1970, forKey: .installedAt)
         try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encode(providerSectionInjected, forKey: .providerSectionInjected)
     }
 }
 
