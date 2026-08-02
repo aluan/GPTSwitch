@@ -216,7 +216,7 @@ final class AppModel {
                 savedConfiguration = try? stateStore.load()
             }
             if let savedConfiguration, !(error is ChatGPTAuthError) {
-                startLegacyFallback(configuration: savedConfiguration, migrationError: error)
+                await startLegacyFallback(configuration: savedConfiguration, migrationError: error)
             } else {
                 fail(error)
             }
@@ -881,28 +881,37 @@ final class AppModel {
         }
     }
 
-    private func startLegacyFallback(configuration: ProxyConfiguration, migrationError: Error) {
+    private func startLegacyFallback(configuration: ProxyConfiguration, migrationError: Error) async {
         self.configuration = configuration
         editablePort = String(configuration.port)
-        let profile = ProviderProfile(
-            configName: configuration.providerName,
-            displayName: configuration.providerName,
-            baseURL: configuration.upstreamBaseURL,
-            bridgeModel: configuration.bridgeModel,
-            credentialMode: .passthrough
-        )
-        providers = [profile]
-        activeProviderID = profile.id
+        // migration 失败时优先加载已有 providers，避免用临时 passthrough provider 覆盖
+        // providers 列表。否则 UI 会显示孤立的 chatgpt passthrough 项，且用户对其启用/检查
+        // 会经 recordProviderHealth→saveProvider 把这个临时项 INSERT 进数据库，产生重复的
+        // chatgpt provider。数据库有 providers 时用其 active；仅数据库为空时才创建兜底项。
+        try? await reloadProviders()
         AppLog.error("Provider data migration failed; continuing with legacy routing")
-        if configuration.isEnabled {
-            startProxy(
-                with: configuration,
-                snapshot: ActiveProviderSnapshot(profile: profile, bearerToken: nil)
-            )
-        } else {
+        guard configuration.isEnabled else {
             status = .stopped
             lastError = "Provider 数据迁移失败，已保留原代理配置：\(migrationError.localizedDescription)"
+            return
         }
+        let snapshot: ActiveProviderSnapshot
+        if let activeProvider {
+            snapshot = (try? makeSnapshot(for: activeProvider))
+                ?? ActiveProviderSnapshot(profile: activeProvider, bearerToken: nil)
+        } else {
+            let profile = ProviderProfile(
+                configName: configuration.providerName,
+                displayName: configuration.providerName,
+                baseURL: configuration.upstreamBaseURL,
+                bridgeModel: configuration.bridgeModel,
+                credentialMode: .passthrough
+            )
+            providers = [profile]
+            activeProviderID = profile.id
+            snapshot = ActiveProviderSnapshot(profile: profile, bearerToken: nil)
+        }
+        startProxy(with: configuration, snapshot: snapshot)
     }
 
     private func makeActiveSnapshot() throws -> ActiveProviderSnapshot {
