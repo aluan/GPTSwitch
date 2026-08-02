@@ -262,6 +262,13 @@ struct ProviderHealthService: Sendable {
             if provider.wireProtocol == .anthropicMessages {
                 request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             }
+            if provider.credentialMode == .chatGPTAccount {
+                // 伪装为 codex CLI 风格请求，避免 chatgpt.com 的 Cloudflare WAF
+                // 拦截默认 URLSession User-Agent（实测会返回 403 WAF 拦截页）。
+                request.setValue("codex_cli_rs/0.144.4", forHTTPHeaderField: "User-Agent")
+                request.setValue("responses=experimental", forHTTPHeaderField: "OpenAI-Beta")
+                request.setValue("codex_cli_rs", forHTTPHeaderField: "originator")
+            }
 
             do {
                 let (data, response) = try await load(request)

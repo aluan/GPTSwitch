@@ -151,25 +151,33 @@ final class AppModel {
                     chatGPTAccountID: candidate.chatGPTAccountID
                 )
                 let verified = try await recordProviderHealth(result, provider: candidate.profile)
-                guard result.state != .unavailable else {
-                    try? configEditor.restore(saved)
-                    try? modelCatalogService.restore()
-                    var stopped = saved
-                    stopped.isEnabled = false
-                    configuration = stopped
-                    status = .stopped
-                    lastError = ProviderValidationError.incompatibleToolCalling(
-                        result.message ?? "原生工具调用探针失败"
-                    ).localizedDescription
-                    AppLog.error(lastError ?? "Provider tool compatibility check failed")
-                    return
+                if result.state == .unavailable {
+                    // ChatGPT 账号探针可能被 WAF 拦截(401/403)而真实流量不受影响，不阻断。
+                    if candidate.profile.credentialMode == .chatGPTAccount,
+                       [401, 403].contains(result.statusCode) {
+                        AppLog.info("ChatGPT 探针返回 \(result.statusCode ?? 0)，跳过健康门控继续启动")
+                    } else {
+                        try? configEditor.restore(saved)
+                        try? modelCatalogService.restore()
+                        var stopped = saved
+                        stopped.isEnabled = false
+                        configuration = stopped
+                        status = .stopped
+                        lastError = ProviderValidationError.incompatibleToolCalling(
+                            result.message ?? "原生工具调用探针失败"
+                        ).localizedDescription
+                        AppLog.error(lastError ?? "Provider tool compatibility check failed")
+                        return
+                    }
                 }
                 let snapshot = try makeSnapshot(for: verified)
                 let needsSwitch = saved.providerName != verified.configName
                 if needsSwitch {
                     // 存档 provider 与 DB active 不一致（历史遗留错位）：切到 DB active。
                     stopProxy()
-                    try configEditor.restore(saved)
+                    // restore 容错：陈旧存档(如 aigocode)在裸 config 上找不到段会抛
+                    // configurationChanged，吞掉，继续 enable(active) 注入/改写。
+                    try? configEditor.restore(saved)
                     let updated = try configEditor.enable(
                         port: saved.port,
                         bridgeModel: verified.bridgeModel,
@@ -321,10 +329,15 @@ final class AppModel {
                     chatGPTAccountID: candidate.chatGPTAccountID
                 )
                 let verified = try await recordProviderHealth(result, provider: provider)
-                guard result.state != .unavailable else {
-                    throw ProviderValidationError.incompatibleToolCalling(
-                        result.message ?? "原生工具调用探针失败"
-                    )
+                if result.state == .unavailable {
+                    if provider.credentialMode == .chatGPTAccount,
+                       [401, 403].contains(result.statusCode) {
+                        AppLog.info("ChatGPT 探针返回 \(result.statusCode ?? 0)，跳过健康门控继续切换")
+                    } else {
+                        throw ProviderValidationError.incompatibleToolCalling(
+                            result.message ?? "原生工具调用探针失败"
+                        )
+                    }
                 }
                 try await database.setActiveProvider(id: id)
                 activeProviderID = id
@@ -775,10 +788,17 @@ final class AppModel {
                 chatGPTAccountID: candidate.chatGPTAccountID
             )
             let verified = try await recordProviderHealth(result, provider: provider)
-            guard result.state != .unavailable else {
-                throw ProviderValidationError.incompatibleToolCalling(
-                    result.message ?? "原生工具调用探针失败"
-                )
+            if result.state == .unavailable {
+                // ChatGPT 账号探针可能被 Cloudflare WAF 拦截(401/403)而真实 codex
+                // 流量（携带 codex header 经代理转发）不受影响，此种情况不阻断启用。
+                if provider.credentialMode == .chatGPTAccount,
+                   [401, 403].contains(result.statusCode) {
+                    AppLog.info("ChatGPT 探针返回 \(result.statusCode ?? 0)，跳过健康门控继续启用")
+                } else {
+                    throw ProviderValidationError.incompatibleToolCalling(
+                        result.message ?? "原生工具调用探针失败"
+                    )
+                }
             }
             let snapshot = try makeSnapshot(for: verified)
             try await database?.setProxyPort(port)
@@ -794,11 +814,12 @@ final class AppModel {
                     return
                 }
                 stopProxy()
-                try configEditor.restore(current)
+                try? configEditor.restore(current)
             } else if let current = configuration, current.isEnabled, reapply {
                 // 切换 active Provider：先停代理 + 还原旧 config，再以新 Provider 重新 enable。
                 stopProxy()
-                try configEditor.restore(current)
+                // restore 容错：陈旧存档在裸 config 上会抛 configurationChanged，吞掉。
+                try? configEditor.restore(current)
             }
             let updated: ProxyConfiguration
             do {
