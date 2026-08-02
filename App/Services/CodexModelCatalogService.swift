@@ -202,6 +202,12 @@ struct CodexModelCatalogService: Sendable {
         if entry["supports_reasoning_summaries"] == nil {
             entry["supports_reasoning_summaries"] = false
         }
+        // 强制关闭 Responses-Lite 与 WebSocket：chatgpt 账号后端在 Lite 模式下
+        // 不支持 gpt-5.5 等（返回 "This model is not supported when using
+        // X-OpenAI-Internal-Codex-Responses-Lite"）。GPTSwitch 走完整 Responses
+        // 转发，统一禁用 Lite/WebSocket，避免 codex 0.146+ 误启用。
+        entry["use_responses_lite"] = false
+        entry["responses_websockets"] = false
         if route.reasoningEfforts.isEmpty {
             entry.removeValue(forKey: "supported_reasoning_levels")
             entry.removeValue(forKey: "default_reasoning_level")
