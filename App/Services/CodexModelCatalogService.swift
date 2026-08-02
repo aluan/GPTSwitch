@@ -108,7 +108,12 @@ struct CodexModelCatalogService: Sendable {
             }
         }
         var outputCatalog = nativeCatalog
-        outputCatalog["models"] = routedModels
+        // 保留原生模型 + 追加注入的第三方模型。
+        // ChatGPT.app Codex Framework 等客户端会把 catalog 与后端已知模型取交集后显示，
+        // 若用注入模型替换掉原生模型，其模型列表会整体空白。保留原生模型（slug 不带
+        // provider/ 前缀，在后端已知列表内）让这类客户端仍能列出原生模型；注入的第三方
+        // 模型（slug 带 provider/ 前缀）追加在后，供 Codex CLI 等纯读 catalog 的客户端选择。
+        outputCatalog["models"] = nativeModels + routedModels
         try writeJSONObject(outputCatalog, to: catalogURL)
 
         let updatedConfig = replacingRootString(

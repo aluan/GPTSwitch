@@ -75,6 +75,19 @@ struct ManagementView: View {
                     .padding(.horizontal, 20)
                     .padding(.vertical, 8)
                     .background(.red.opacity(0.08))
+            } else if model.needsCodexRelaunch {
+                HStack(spacing: 10) {
+                    Label("已更新 Codex 配置，请完全退出并重新打开 Codex 以生效。", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("知道了") { model.dismissCodexRelaunchNotice() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                .background(.orange.opacity(0.08))
             }
             content
         }

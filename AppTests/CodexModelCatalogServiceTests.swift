@@ -75,7 +75,9 @@ final class CodexModelCatalogServiceTests: XCTestCase {
         )
         let catalog = try readJSON(catalogURL)
         let models = try XCTUnwrap(catalog["models"] as? [[String: Any]])
-        XCTAssertEqual(models.count, 1)
+        // 保留原生模型 + 追加注入的第三方模型。
+        XCTAssertEqual(models.count, 2)
+        XCTAssertNotNil(models.first { $0["slug"] as? String == "gpt-5.5" })
         let routed = try XCTUnwrap(models.first { $0["slug"] as? String == "anthropic/anthropic-claude-sonnet-4-6" })
         XCTAssertEqual(routed["display_name"] as? String, "Claude Sonnet")
         XCTAssertNil(routed["service_tiers"])
@@ -131,7 +133,9 @@ final class CodexModelCatalogServiceTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: configURL).contains("model = \"openai/gpt-5.5\""))
         let switchedCatalog = try readJSON(catalogURL)
         let switchedModels = try XCTUnwrap(switchedCatalog["models"] as? [[String: Any]])
-        XCTAssertEqual(switchedModels.count, 1)
+        // 原生模型保留 + 新 provider 注入模型。
+        XCTAssertEqual(switchedModels.count, 2)
+        XCTAssertNotNil(switchedModels.first { $0["slug"] as? String == "gpt-5.5" })
         XCTAssertNotNil(switchedModels.first { $0["slug"] as? String == "openai/gpt-5.5" })
         XCTAssertNil(switchedModels.first {
             ($0["slug"] as? String)?.hasPrefix("anthropic/") == true
@@ -253,9 +257,12 @@ final class CodexModelCatalogServiceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: catalogURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: cacheURL.path))
         let catalog = try readJSON(catalogURL)
-        let model = try XCTUnwrap((catalog["models"] as? [[String: Any]])?.first)
-        XCTAssertEqual(model["slug"] as? String, "provider/provider-model")
-        XCTAssertEqual(model["base_instructions"] as? String, "Be helpful and follow the user's instructions.")
+        let models = try XCTUnwrap(catalog["models"] as? [[String: Any]])
+        // native catalog 缺失时用占位 defaultCatalog，保留占位 + 注入。
+        XCTAssertEqual(models.count, 2)
+        XCTAssertEqual(models.first?["slug"] as? String, "gptswitch-template")
+        let routed = try XCTUnwrap(models.first { $0["slug"] as? String == "provider/provider-model" })
+        XCTAssertEqual(routed["base_instructions"] as? String, "Be helpful and follow the user's instructions.")
     }
 
     private func writeJSON(_ object: [String: Any], to url: URL) throws {

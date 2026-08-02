@@ -24,6 +24,8 @@ final class AppModel {
     private(set) var selectedSkinThemeID = BuiltInSkinCatalog.defaultThemeID
     private(set) var skinEnabled = false
     private(set) var skinRuntimeStatus: SkinRuntimeStatus = .native
+    /// 代理刚启用/停用/切换后，提示用户重启 Codex 才能让新的 base_url 与模型目录生效。
+    private(set) var needsCodexRelaunch = false
     var usageTimeRange: UsageTimeRange = .hours24
     var editablePort = "17891"
 
@@ -273,6 +275,7 @@ final class AppModel {
             loginItemEnabled = loginItemService.isEnabled
             status = .stopped
             lastError = nil
+            needsCodexRelaunch = true
             AppLog.info("Restored Codex upstream URL")
         } catch {
             fail(error)
@@ -1132,9 +1135,14 @@ final class AppModel {
         case .success:
             status = .running
             legacyMigrationService.removeLegacyPayload()
+            needsCodexRelaunch = true
         case .failure(let error):
             fail(error)
         }
+    }
+
+    func dismissCodexRelaunchNotice() {
+        needsCodexRelaunch = false
     }
 
     private func record(_ metric: RequestMetric) {
