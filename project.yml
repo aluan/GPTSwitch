@@ -28,8 +28,8 @@ targets:
     info:
       path: App/Resources/Info.plist
       properties:
-        CFBundleShortVersionString: "1.5.10"
-        CFBundleVersion: "1510"
+        CFBundleShortVersionString: "1.5.11"
+        CFBundleVersion: "1511"
         LSUIElement: true
     settings:
       base:

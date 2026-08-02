@@ -20,6 +20,16 @@ enum CodexModelCatalogError: LocalizedError {
 }
 
 struct CodexModelCatalogService: Sendable {
+    /// 官方 catalog 中全量套餐列表（与 chatgpt.com/backend-api/codex/models 返回一致），
+    /// 用于给注入模型补 available_in_plans，确保任何套餐的账号都可见。
+    private static let allPlans = [
+        "business", "edu", "edu_plus", "edu_pro", "education", "enterprise",
+        "enterprise_cbp_automation", "enterprise_cbp_usage_based", "finserv",
+        "free", "free_workspace", "go", "hc", "k12", "plus", "pro", "prolite",
+        "quorum", "sci", "self_serve_business_prolite",
+        "self_serve_business_usage_based", "team",
+    ]
+
     private struct State: Codable {
         let originalCatalogPath: String?
         let originalModel: String?
@@ -201,6 +211,16 @@ struct CodexModelCatalogService: Sendable {
         // 模板若未提供则默认 false（不展示 reasoning summaries，安全降级）。
         if entry["supports_reasoning_summaries"] == nil {
             entry["supports_reasoning_summaries"] = false
+        }
+        // codex 0.146 Desktop 的模型选择器按 available_in_plans 过滤：旧 native
+        // 备份（源自 codex 自己的 models_cache，已剥离套餐字段）不含该字段，
+        // 缺失会导致全部注入模型被过滤、聊天窗口列表空白。模板未提供时给全量套餐。
+        if entry["available_in_plans"] == nil {
+            entry["available_in_plans"] = Self.allPlans
+        }
+        // 同理补齐 minimal_client_version，避免客户端版本校验丢弃注入模型。
+        if entry["minimal_client_version"] == nil {
+            entry["minimal_client_version"] = "0.98.0"
         }
         // 强制关闭 Responses-Lite 与 WebSocket：chatgpt 账号后端在 Lite 模式下
         // 不支持 gpt-5.5 等（返回 "This model is not supported when using
