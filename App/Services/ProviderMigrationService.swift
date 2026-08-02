@@ -6,7 +6,7 @@ struct ProviderMigrationService: Sendable {
 
     init(
         configEditor: CodexConfigEditor = CodexConfigEditor(),
-        credentialStore: any CredentialStore = KeychainCredentialStore()
+        credentialStore: any CredentialStore = FileCredentialStore()
     ) {
         self.configEditor = configEditor
         self.credentialStore = credentialStore

@@ -40,7 +40,7 @@ final class AppModel {
     private let chatGPTAuthService = ChatGPTAuthService()
     private let skinService = CodexSkinService()
     private let skinImageProcessor = SkinImageProcessor()
-    private let credentialStore: any CredentialStore = KeychainCredentialStore()
+    private let credentialStore: any CredentialStore = FileCredentialStore()
     private var database: AppDatabase?
     private var providerRouter: ActiveProviderRouter?
     private var server: NativeProxyServer?
@@ -137,6 +137,9 @@ final class AppModel {
                 try await database.seedBuiltInPricingRules(catalog.rules, version: catalog.version)
             }
             try await reloadProviders()
+            // 一次性迁移：把 Keychain 里的 token 迁到文件存储，并删除 Keychain 项，
+            // 之后不再访问 Keychain，避免 adhoc 重签后每次弹密码授权。
+            migrateKeychainTokensToFile()
             statisticsEnabled = try await database.statisticsEnabled()
             retentionDays = try await database.retentionDays()
             crossProviderRoutingEnabled = try await database.crossProviderRoutingEnabled()
@@ -990,6 +993,27 @@ final class AppModel {
         if activeProviderID == nil, let first = providers.first {
             try await database.setActiveProvider(id: first.id)
             activeProviderID = first.id
+        }
+    }
+
+    /// 一次性迁移：把 Keychain 里的 provider token 迁到 FileCredentialStore，
+    /// 并删除 Keychain 项。之后全程不再访问 Keychain，避免 adhoc 重签后弹密码授权。
+    /// 迁移读取 Keychain 时可能弹一次密码（最后一次），迁完不再弹。
+    private func migrateKeychainTokensToFile() {
+        let keychain = KeychainCredentialStore()
+        for provider in providers {
+            guard provider.credentialMode == .keychainBearer
+                || provider.credentialMode == .keychainAPIKey else { continue }
+            // 文件已有则跳过（已迁移过）。
+            if let existing = try? credentialStore.token(for: provider.id), !existing.isEmpty {
+                try? keychain.deleteToken(for: provider.id)
+                continue
+            }
+            if let token = try? keychain.token(for: provider.id), !token.isEmpty {
+                try? credentialStore.setToken(token, for: provider.id)
+            }
+            // 无论迁移成功与否，删 Keychain 项，避免后续读取弹窗。
+            try? keychain.deleteToken(for: provider.id)
         }
     }
 
