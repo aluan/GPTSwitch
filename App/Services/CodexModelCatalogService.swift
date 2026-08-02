@@ -196,6 +196,12 @@ struct CodexModelCatalogService: Sendable {
         entry["visibility"] = "list"
         entry["supported_in_api"] = true
         entry["input_modalities"] = route.inputModalities
+        // codex 0.144+ 严格要求每个 catalog 模型含 supports_reasoning_summaries；
+        // 旧 native 备份不含该字段，缺失会导致 codex 解析 catalog 失败、拒绝运行。
+        // 模板若未提供则默认 false（不展示 reasoning summaries，安全降级）。
+        if entry["supports_reasoning_summaries"] == nil {
+            entry["supports_reasoning_summaries"] = false
+        }
         if route.reasoningEfforts.isEmpty {
             entry.removeValue(forKey: "supported_reasoning_levels")
             entry.removeValue(forKey: "default_reasoning_level")
