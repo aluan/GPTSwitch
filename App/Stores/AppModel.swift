@@ -164,15 +164,40 @@ final class AppModel {
                     AppLog.error(lastError ?? "Provider tool compatibility check failed")
                     return
                 }
-                try configEditor.activate(saved)
-                _ = try modelCatalogService.sync(
-                    provider: verified,
-                    allProviders: providers,
-                    crossProvider: crossProviderRoutingEnabled
-                )
-                enableLoginItemIfPossible(refresh: saved.toolVersion != ProxyConfiguration.currentToolVersion)
                 let snapshot = try makeSnapshot(for: verified)
-                startProxy(with: saved, snapshot: snapshot)
+                let needsSwitch = saved.providerName != verified.configName
+                if needsSwitch {
+                    // 存档 provider 与 DB active 不一致（历史遗留错位）：切到 DB active。
+                    stopProxy()
+                    try configEditor.restore(saved)
+                    let updated = try configEditor.enable(
+                        port: saved.port,
+                        bridgeModel: verified.bridgeModel,
+                        providerName: verified.configName,
+                        upstreamBaseURL: verified.baseURL
+                    )
+                    var activated = updated
+                    activated.isEnabled = true
+                    try stateStore.save(activated)
+                    configuration = activated
+                    inspection = nil
+                    _ = try modelCatalogService.sync(
+                        provider: verified,
+                        allProviders: providers,
+                        crossProvider: crossProviderRoutingEnabled
+                    )
+                    enableLoginItemIfPossible(refresh: saved.toolVersion != ProxyConfiguration.currentToolVersion)
+                    startProxy(with: activated, snapshot: snapshot)
+                } else {
+                    try configEditor.activate(saved)
+                    _ = try modelCatalogService.sync(
+                        provider: verified,
+                        allProviders: providers,
+                        crossProvider: crossProviderRoutingEnabled
+                    )
+                    enableLoginItemIfPossible(refresh: saved.toolVersion != ProxyConfiguration.currentToolVersion)
+                    startProxy(with: saved, snapshot: snapshot)
+                }
             } else {
                 status = saved == nil ? .notConfigured : .stopped
             }
@@ -758,7 +783,10 @@ final class AppModel {
             let snapshot = try makeSnapshot(for: verified)
             try await database?.setProxyPort(port)
             persistedProxyPort = port
-            if let current = configuration, current.isEnabled, !forceReenable {
+            // 存档 provider 与 DB active 不一致时，强制 reapply（切到 active），避免 config/state 脱节。
+            let needsSwitch = configuration?.providerName != snapshot.profile.configName
+            let reapply = forceReenable || needsSwitch
+            if let current = configuration, current.isEnabled, !reapply {
                 if current.port == port {
                     try configEditor.activate(current)
                     try refreshRuntimeRouting(defaultSnapshot: snapshot)
@@ -767,7 +795,7 @@ final class AppModel {
                 }
                 stopProxy()
                 try configEditor.restore(current)
-            } else if let current = configuration, current.isEnabled, forceReenable {
+            } else if let current = configuration, current.isEnabled, reapply {
                 // 切换 active Provider：先停代理 + 还原旧 config，再以新 Provider 重新 enable。
                 stopProxy()
                 try configEditor.restore(current)
