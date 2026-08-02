@@ -112,46 +112,69 @@ struct CodexConfigEditor: Sendable {
     func enable(
         at configURL: URL = AppPaths.codexConfig,
         port: UInt16,
-        bridgeModel override: String?
+        bridgeModel override: String?,
+        providerName target: String? = nil,
+        upstreamBaseURL: String? = nil
     ) throws -> ProxyConfiguration {
         let parsed = try parse(configURL)
-        // 裸 ChatGPT 账号流：注入 [model_providers.chatgpt] 段 + model_provider。
+        // 目标 provider：显式指定（切换 active）时用之，否则用 config 当前 model_provider。
+        let targetName = target ?? parsed.providerName
+        let upstreamSource = upstreamBaseURL ?? parsed.baseURL
+        let upstream = try validatedUpstream(upstreamSource)
+        let localURL = localBaseURL(for: upstream, port: port)
+        let localValue = localURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let upstreamValue = upstream.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let bridge = normalizedModel(override) ?? parsed.model
+        let backupURL = try createBackup(of: configURL)
+
+        // 裸 ChatGPT 账号流：注入目标 provider 段 + model_provider。
         if parsed.sectionMissing {
-            let upstream = try validatedUpstream(parsed.baseURL)
-            let localURL = localBaseURL(for: upstream, port: port)
-            let backupURL = try createBackup(of: configURL)
             try injectChatGPTProviderSection(
                 in: configURL,
-                providerName: parsed.providerName,
-                baseURLValue: localURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                providerName: targetName,
+                baseURLValue: localValue
             )
             return ProxyConfiguration(
                 configPath: configURL.path,
-                providerName: parsed.providerName,
-                bridgeModel: normalizedModel(override) ?? parsed.model,
-                upstreamBaseURL: upstream.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-                localBaseURL: localURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+                providerName: targetName,
+                bridgeModel: bridge,
+                upstreamBaseURL: upstreamValue,
+                localBaseURL: localValue,
                 port: port,
                 backupPath: backupURL.path,
                 providerSectionInjected: true
             )
         }
-        let upstream = try validatedUpstream(parsed.baseURL)
-        let localURL = localBaseURL(for: upstream, port: port)
-        let backupURL = try createBackup(of: configURL)
-        try replaceBaseURL(
+        // config 当前 model_provider 即目标：仅改写 base_url 到 loopback。
+        if parsed.providerName == targetName {
+            try replaceBaseURL(in: configURL, parsed: parsed, replacement: localValue)
+            return ProxyConfiguration(
+                configPath: configURL.path,
+                providerName: targetName,
+                bridgeModel: bridge,
+                upstreamBaseURL: upstreamValue,
+                localBaseURL: localValue,
+                port: port,
+                backupPath: backupURL.path,
+                providerSectionInjected: false
+            )
+        }
+        // 切换 model_provider 到目标：设顶层 model_provider，确保目标段存在并指向 loopback。
+        let injected = try switchProviderSection(
             in: configURL,
             parsed: parsed,
-            replacement: localURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            target: targetName,
+            baseURLValue: localValue
         )
         return ProxyConfiguration(
             configPath: configURL.path,
-            providerName: parsed.providerName,
-            bridgeModel: normalizedModel(override) ?? parsed.model,
-            upstreamBaseURL: upstream.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-            localBaseURL: localURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+            providerName: targetName,
+            bridgeModel: bridge,
+            upstreamBaseURL: upstreamValue,
+            localBaseURL: localValue,
             port: port,
-            backupPath: backupURL.path
+            backupPath: backupURL.path,
+            providerSectionInjected: injected
         )
     }
 
@@ -481,6 +504,56 @@ struct CodexConfigEditor: Sendable {
         lines.append("name = \"ChatGPT\"")
         lines.append("base_url = \(quotedURL)")
         try writeLines(lines, to: url)
+    }
+
+    /// 切换 model_provider 到 target，并确保 [model_providers.<target>] 段存在、
+    /// 其 base_url 指向 loopback。段已存在则改写其 base_url；不存在则注入。
+    /// 返回 true 表示段是新注入的（restore 时需移除）。
+    private func switchProviderSection(
+        in url: URL,
+        parsed: ParsedConfig,
+        target: String,
+        baseURLValue: String
+    ) throws -> Bool {
+        var lines = parsed.lines
+        let quotedProvider = try quotedTOMLString(target)
+        // 设顶层 model_provider = target。
+        let topLevel = topLevelLineCount(in: lines)
+        var set = false
+        for index in 0..<topLevel {
+            if let existing = assignment(lines[index], key: "model_provider") {
+                lines[index] = "\(existing.prefix)\(quotedProvider)"
+                set = true
+                break
+            }
+        }
+        if !set {
+            let firstSection = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }) ?? lines.count
+            lines.insert("model_provider = \(quotedProvider)", at: firstSection)
+        }
+        // 目标段：存在则改写 base_url，不存在则注入。
+        if let sectionStart = lines.firstIndex(where: { providerSectionName($0) == target }) {
+            var idx = sectionStart + 1
+            while idx < lines.count {
+                let line = lines[idx]
+                if line.trimmingCharacters(in: .whitespaces).hasPrefix("[") { break }
+                if let existing = assignment(line, key: "base_url") {
+                    let quotedURL = try quotedTOMLString(baseURLValue)
+                    lines[idx] = "\(existing.prefix)\(quotedURL)"
+                    break
+                }
+                idx += 1
+            }
+            try writeLines(lines, to: url)
+            return false
+        }
+        let quotedURL = try quotedTOMLString(baseURLValue)
+        if let last = lines.last, !last.isEmpty { lines.append("") }
+        lines.append("[model_providers.\(target)]")
+        lines.append("name = \"\(target)\"")
+        lines.append("base_url = \(quotedURL)")
+        try writeLines(lines, to: url)
+        return true
     }
 
     /// 移除注入的 [model_providers.<providerName>] 段及其顶层 model_provider 行。

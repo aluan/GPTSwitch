@@ -301,10 +301,16 @@ final class AppModel {
                         result.message ?? "原生工具调用探针失败"
                     )
                 }
-                let snapshot = try makeSnapshot(for: verified)
                 try await database.setActiveProvider(id: id)
                 activeProviderID = id
-                try refreshRuntimeRouting(defaultSnapshot: snapshot)
+                // 联动：启用某 Provider 即让其成为运行中的代理目标。
+                // 代理关着 → 直接启动并指向该 Provider；代理开着 → 重新 apply
+                // （restore 旧 + enable 新 + 重启），使 config/state 与 active 始终一致。
+                if proxyEnabled {
+                    await applyAndStartAsync(forceReenable: true)
+                } else {
+                    await applyAndStartAsync()
+                }
                 lastError = nil
                 AppLog.info("Switched active Provider to \(provider.displayName)")
             } catch {
@@ -728,7 +734,7 @@ final class AppModel {
         }
     }
 
-    private func applyAndStartAsync() async {
+    private func applyAndStartAsync(forceReenable: Bool = false) async {
         guard let port = UInt16(editablePort), port > 0 else {
             failMessage("端口必须是 1–65535 之间的数字")
             return
@@ -752,7 +758,7 @@ final class AppModel {
             let snapshot = try makeSnapshot(for: verified)
             try await database?.setProxyPort(port)
             persistedProxyPort = port
-            if let current = configuration, current.isEnabled {
+            if let current = configuration, current.isEnabled, !forceReenable {
                 if current.port == port {
                     try configEditor.activate(current)
                     try refreshRuntimeRouting(defaultSnapshot: snapshot)
@@ -761,12 +767,18 @@ final class AppModel {
                 }
                 stopProxy()
                 try configEditor.restore(current)
+            } else if let current = configuration, current.isEnabled, forceReenable {
+                // 切换 active Provider：先停代理 + 还原旧 config，再以新 Provider 重新 enable。
+                stopProxy()
+                try configEditor.restore(current)
             }
             let updated: ProxyConfiguration
             do {
                 updated = try configEditor.enable(
                     port: port,
-                    bridgeModel: snapshot.profile.bridgeModel
+                    bridgeModel: snapshot.profile.bridgeModel,
+                    providerName: snapshot.profile.configName,
+                    upstreamBaseURL: snapshot.profile.baseURL
                 )
             } catch ConfigEditorError.alreadyUsingLoopback {
                 updated = try configEditor.adoptLoopback(
